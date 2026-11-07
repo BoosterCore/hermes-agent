@@ -725,6 +725,43 @@ def _migrate_to_50(results: dict[str, Any], quiet: bool) -> None:
             "  ✓ Removed security.tirith_* — the tirith scanner is no longer bundled with Hermes.")
 
 
+#: (section, key, template line directly above the key, the value the template set). The line is
+#: cli-config.yaml.example's own comment for the key; writers keep comments, so a key still under
+#: it is the copied template line. Both values read as "the default" when they were copied: the
+#: comment said the backup was a full zip and off by default (the quick snapshot ran regardless
+#: until #65754), and that 500 was the default turn cap.
+_TEMPLATE_SEEDED_KEYS = (
+    ("updates", "pre_update_backup",
+     "  # Off by default because large homes can add minutes to every update.\n", False),
+    ("agent", "max_turns",
+     "  # Recommended: 20-30 for focused tasks, 50-100 for open exploration\n", 500),
+)
+
+
+def _migrate_to_53(results: dict[str, Any], quiet: bool) -> None:
+    # 52 → 53: drop updates.pre_update_backup: false and agent.max_turns: 500 where they are still
+    # the template's own lines, so script and Docker installs get the quick pre-update snapshot and
+    # no turn cap. A value typed anywhere else, or any other value, is the user's and stays.
+    if not _cfg().supports_file_tooling():
+        return  # a non-file backend's document never held the template's comment lines
+    try:
+        text = _cfg().get_config_path().read_text(encoding="utf-8-sig")  # config-reader: ok — the template comment lines exist only in the local file
+    except OSError:
+        return
+    config = read_raw_config()
+    dropped = []
+    for section, key, comment, seeded in _TEMPLATE_SEEDED_KEYS:
+        block = config.get(section)
+        value = block.get(key) if isinstance(block, dict) else None
+        if type(value) is type(seeded) and value == seeded and f"{comment}  {key}: " in text:
+            del block[key]
+            dropped.append(f"{section}.{key}")
+    if dropped:
+        _commit(config, results, quiet, f"removed template-seeded {', '.join(dropped)}",
+                f"  ✓ Removed {', '.join(dropped)} copied from the install template; the defaults apply "
+                "(quick pre-update snapshot, no turn cap).")
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
     (12, _migrate_to_12),
     (13, _migrate_to_13),
@@ -873,6 +910,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
     # 51 -> 52: browser.backend + browser.extension_control dropped, AGENT_BROWSER_* .env settings ->
     # browser.* (see config_migrations_browser.migrate_to_52).
     (52, migrate_to_52),
+    (53, _migrate_to_53),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or
@@ -883,8 +921,9 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
 #: decides by a value or an absence that, in such a file, is the user's own choice. v13 is left
 #: out: it clears OPENAI_MODEL from .env, a generic name Hermes never reads but the user's tools may.
 #: v41 is left out too: it rewrites profile SOUL.md on a heading match, an artifact whose
-#: provenance the config stamp says nothing about.
-LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50, 51, 52})
+#: provenance the config stamp says nothing about. v53 is in: it decides by the template's own
+#: comment line, which proves the value was copied, not chosen.
+LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50, 51, 52, 53})
 
 #: Legacy-key steps that run on every migration pass whatever the stamp says, because a stamp at
 #: or past their version does not prove they ran: unreleased builds of the gateway-runtime branch

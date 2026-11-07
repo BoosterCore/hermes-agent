@@ -100,3 +100,49 @@ class TestRetiredKeysWhateverTheStamp:
         assert config_path.read_bytes() == settled
         from hermes_cli.config_migrations import LEGACY_KEY_STEPS, STAMP_INDEPENDENT_STEPS
         assert STAMP_INDEPENDENT_STEPS <= LEGACY_KEY_STEPS
+
+
+class TestTemplateSeededUpdateBackupAndTurnCap:
+    """The installers copied cli-config.yaml.example, whose `pre_update_backup: false` turned the
+    quick pre-update snapshot off and whose `max_turns: 500` capped runs. v53 drops them only while
+    they still sit under the template's own comment line."""
+
+    _RELEASED = (
+        "_config_version: 52\n"
+        "agent:\n"
+        "  # Recommended: 20-30 for focused tasks, 50-100 for open exploration\n"
+        "  max_turns: 500\n"
+        "  gateway_timeout: 1800\n"
+        "updates:\n"
+        "  # Off by default because large homes can add minutes to every update.\n"
+        "  pre_update_backup: false\n"
+        "  backup_keep: 5\n"
+    )
+
+    def _migrate(self, tmp_path, monkeypatch, text, version=52):
+        from hermes_cli.config_migrations import run_migrations
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(text, encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        run_migrations(version, {"env_added": [], "config_added": [], "warnings": []}, quiet=True,
+                       unversioned=version == 0)
+        return yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+    def test_template_seeded_values_are_dropped(self, tmp_path, monkeypatch):
+        raw = self._migrate(tmp_path, monkeypatch, self._RELEASED)
+        assert "pre_update_backup" not in raw["updates"] and raw["updates"]["backup_keep"] == 5
+        assert "max_turns" not in raw["agent"] and raw["agent"]["gateway_timeout"] == 1800
+
+    def test_unversioned_template_copy_is_migrated_too(self, tmp_path, monkeypatch):
+        text = self._RELEASED.replace("_config_version: 52\n", "")
+        raw = self._migrate(tmp_path, monkeypatch, text, version=0)
+        assert "pre_update_backup" not in raw["updates"] and "max_turns" not in raw["agent"]
+
+    def test_values_the_user_set_are_kept(self, tmp_path, monkeypatch):
+        text = (self._RELEASED.replace("  max_turns: 500\n", "  max_turns: 80\n")
+                .replace("  # Off by default because large homes can add minutes to every update.\n", "")
+                + "  # keep my disk quiet\n")
+        raw = self._migrate(tmp_path, monkeypatch, text)
+        assert raw["updates"]["pre_update_backup"] is False
+        assert raw["agent"]["max_turns"] == 80
